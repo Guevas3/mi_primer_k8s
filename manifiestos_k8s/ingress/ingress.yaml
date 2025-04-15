@@ -13,6 +13,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: static-site-service
+                name: sitio-web-service
                 port:
                   number: 80
