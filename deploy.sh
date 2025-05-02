@@ -24,6 +24,7 @@ echo "📥 Clonando repositorios..."
 # -------------------------
 STATIC_SITE_PATH="$(pwd)/static-website"
 echo "🚀 Iniciando Minikube con montaje de carpeta: $STATIC_SITE_PATH"
+minikube delete
 minikube start --memory=4096 --cpus=2 --mount --mount-string="$STATIC_SITE_PATH:/mnt/web"
 
 # -------------------------
