@@ -2,125 +2,156 @@
 
 # 🚀 Script de Deploy para Proyecto Web en Kubernetes
 
-# -------------------------
-# 🛠️ Verificar Requisitos
-# -------------------------
-for cmd in minikube kubectl docker git; do
-  if ! command -v $cmd &> /dev/null; then
-    echo "❌ $cmd no está instalado. Abortando."
-    exit 1
-  fi
-done
+# --- FAIL FAST & SANITY CHECKS ---
+set -euo pipefail
+IFS=$'\n\t'
 
-# -------------------------
-# 📂 Clonar Repositorios
-# -------------------------
-echo "📥 Clonando repositorios..."
-[ -d "mi_primer_k8s" ] || git clone https://github.com/Guevas3/mi_primer_k8s.git
-[ -d "static-website" ] || git clone https://github.com/Guevas3/static-website.git
+# --- CONFIGURACIÓN ---
+STATIC_REPO="https://github.com/Guevas3/static-website.git"
+PROJECT_REPO="https://github.com/Guevas3/mi_primer_k8s.git"
+STATIC_DIR="static-website"
+PROJECT_DIR="mi_primer_k8s"
+MOUNT_SRC="$(pwd)/$STATIC_DIR"
+MOUNT_DEST="/mnt/web"
+HOSTS_FILE="/etc/hosts"
+INGRESS_DOMAIN="local.service"
 
-# -------------------------
-# 🧪 Iniciar Minikube
-# -------------------------
-STATIC_SITE_PATH="$(pwd)/static-website"
-echo "🚀 Iniciando Minikube con montaje de carpeta: $STATIC_SITE_PATH"
-minikube delete
-minikube start --memory=4096 --cpus=2 --mount --mount-string="$STATIC_SITE_PATH:/mnt/web"
+# --- VERIFICAR DEPENDENCIAS ---
+function check_dependencies() {
+    echo "🔍 Verificando dependencias..."
+    for cmd in minikube kubectl docker git; do
+        if ! command -v "$cmd" &> /dev/null; then
+            echo "❌ $cmd no está instalado. Abortando."
+            exit 1
+        fi
+    done
+    echo "✅ Todas las dependencias están presentes"
+}
 
-# -------------------------
-# 📦 Aplicar Archivos K8s
-# -------------------------
-echo "📄 Aplicando archivos de Kubernetes..."
+# --- CLONAR REPOSITORIOS ---
+function clone_repos() {
+    echo "📥 Clonando repositorios..."
+    [ -d "$PROJECT_DIR" ] || git clone "$PROJECT_REPO"
+    [ -d "$STATIC_DIR" ] || git clone "$STATIC_REPO"
+}
 
-cd mi_primer_k8s || { echo "❌ No se encontró la carpeta mi_primer_k8s. Abortando."; exit 1; }
-cd manifiestos_k8s || { echo "❌ No se encontró la carpeta manifiestos_k8s. Abortando."; exit 1; }
+# --- INICIAR MINIKUBE ---
+function start_minikube() {
+    echo "🚀 Iniciando Minikube con montaje de carpeta: $MOUNT_SRC"
+    minikube delete
+    minikube start --memory=4096 --cpus=2 --mount --mount-string="$MOUNT_SRC:$MOUNT_DEST"
+}
 
-for dir in volumes deployments services; do
-  if [ -d "$dir" ]; then
-    echo "📁 Aplicando archivos en $dir..."
-    kubectl apply -f "$dir/"
-  else
-    echo "⚠️ Carpeta $dir no encontrada. Saltando."
-  fi
-done
+# --- APLICAR ARCHIVOS K8S ---
+function apply_manifests() {
+    echo "📄 Aplicando archivos de Kubernetes..."
+    cd "$PROJECT_DIR" || { echo "❌ No se encontró la carpeta $PROJECT_DIR. Abortando."; exit 1; }
+    cd manifiestos_k8s || { echo "❌ No se encontró la carpeta manifiestos_k8s. Abortando."; exit 1; }
 
-# -------------------------
-# ✅ Esperar Pod en Running (hasta 10 min)
-# -------------------------
-echo "⏳ Esperando que el pod esté en estado 'Running' (hasta 10 minutos)..."
-start_time=$(date +%s)
-while true; do
-  POD_STATUS=$(kubectl get pods --no-headers | awk '{print $3}')
-  if [ "$POD_STATUS" == "Running" ]; then
-    echo "✅ El pod está en estado Running."
-    break
-  fi
-  now=$(date +%s)
-  elapsed=$((now - start_time))
-  if [ "$elapsed" -ge 600 ]; then
-    echo "❌ El pod no llegó a estado 'Running' tras 10 minutos. Abortando."
-    exit 1
-  fi
-  echo "⌛ Estado actual: $POD_STATUS. Reintentando en 10s..."
-  sleep 10
-done
+    for dir in volumes deployments services; do
+        if [ -d "$dir" ]; then
+            echo "📁 Aplicando archivos en $dir..."
+            kubectl apply -f "$dir/"
+        else
+            echo "⚠️ Carpeta $dir no encontrada. Saltando."
+        fi
+    done
+}
 
-# -------------------------
-# 🌐 Acceder al Servicio
-# -------------------------
-echo "🌐 Accediendo al servicio sitio-web-service en el navegador..."
-minikube service sitio-web-service &
+# --- ESPERAR POD EN RUNNING ---
+function wait_for_pod() {
+    echo "⏳ Esperando que el pod esté en estado 'Running' (hasta 10 minutos)..."
+    local start_time=$(date +%s)
+    while true; do
+        POD_STATUS=$(kubectl get pods --no-headers | awk '{print $3}')
+        if [ "$POD_STATUS" == "Running" ]; then
+            echo "✅ El pod está en estado Running."
+            break
+        fi
+        local now=$(date +%s)
+        local elapsed=$((now - start_time))
+        if [ "$elapsed" -ge 600 ]; then
+            echo "❌ El pod no llegó a estado 'Running' tras 10 minutos. Abortando."
+            exit 1
+        fi
+        echo "⌛ Estado actual: $POD_STATUS. Reintentando en 10s..."
+        sleep 10
+    done
+}
 
-# -------------------------
-# 🌉 Activar Ingress
-# -------------------------
-echo "🔌 Habilitando complemento ingress..."
-minikube addons enable ingress
+# --- ACCEDER AL SERVICIO ---
+function open_service() {
+    echo "🌐 Accediendo al servicio sitio-web-service en el navegador..."
+    minikube service sitio-web-service &
+}
 
-#Eliminamos el webhook porque tira error
-kubectl delete ValidatingWebhookConfiguration ingress-nginx-admission
+# --- CONFIGURAR INGRESS ---
+function configure_ingress() {
+    echo "🔌 Habilitando complemento ingress..."
+    minikube addons enable ingress
 
-# Esperar al Ingress Controller
-echo "⏳ Esperando que el Ingress Controller esté en estado 'Running' (hasta 10 minutos)..."
-start_time=$(date +%s)
-while true; do
-  CONTROLLER_STATUS=$(kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller --no-headers 2>/dev/null | awk '{print $3}')
-  if [ "$CONTROLLER_STATUS" == "Running" ]; then
-    echo "✅ Ingress Controller está en estado Running."
-    break
-  fi
-  now=$(date +%s)
-  elapsed=$((now - start_time))
-  if [ "$elapsed" -ge 600 ]; then
-    echo "❌ El Ingress Controller no está listo tras 10 minutos. Abortando."
-    exit 1
-  fi
-  echo "⌛ Estado actual del controller: $CONTROLLER_STATUS. Reintentando en 10s..."
-  sleep 10
-done
+    echo "❗ Eliminando webhook que causa errores..."
+    kubectl delete ValidatingWebhookConfiguration ingress-nginx-admission || true
 
+    echo "⏳ Esperando que el Ingress Controller esté en estado 'Running' (hasta 10 minutos)..."
+    local start_time=$(date +%s)
+    while true; do
+        CONTROLLER_STATUS=$(kubectl get pods -n ingress-nginx -l app.kubernetes.io/component=controller --no-headers 2>/dev/null | awk '{print $3}')
+        if [ "$CONTROLLER_STATUS" == "Running" ]; then
+            echo "✅ Ingress Controller está en estado Running."
+            break
+        fi
+        local now=$(date +%s)
+        local elapsed=$((now - start_time))
+        if [ "$elapsed" -ge 600 ]; then
+            echo "❌ El Ingress Controller no está listo tras 10 minutos. Abortando."
+            exit 1
+        fi
+        echo "⌛ Estado actual del controller: $CONTROLLER_STATUS. Reintentando en 10s..."
+        sleep 10
+    done
+}
 
-# -------------------------
-# 📄 Aplicar ingress.yaml
-# -------------------------
-if [ -d "ingress" ]; then
-  echo "📄 Aplicando archivo ingress.yaml desde carpeta ingress/..."
-  cd ingress || exit 1
-  kubectl apply -f .
+# --- APLICAR INGRESS.YAML ---
+function apply_ingress() {
+    if [ -d "ingress" ]; then
+        echo "📄 Aplicando archivo ingress.yaml desde carpeta ingress/..."
+        cd ingress || exit 1
+        kubectl apply -f .
+        cd ..
+    else
+        echo "⚠️ Carpeta ingress no encontrada. Saltando aplicación de ingress.yaml."
+    fi
+}
 
-  cd ..
-else
-  echo "⚠️ Carpeta ingress no encontrada. Saltando aplicación de ingress.yaml."
-fi
+# --- CONFIGURAR /ETC/HOSTS ---
+function configure_hosts() {
+    local ip=$(minikube ip)
+    echo "🖥️ La IP de Minikube es: $ip"
+    if ! grep -q "$INGRESS_DOMAIN" "$HOSTS_FILE"; then
+        echo "$ip $INGRESS_DOMAIN" | sudo tee -a "$HOSTS_FILE"
+    else
+        echo "🟢 Entrada en /etc/hosts ya existe"
+    fi
+}
 
-# -------------------------
-# 🌍 Configurar /etc/hosts
-# -------------------------
-MINIKUBE_IP=$(minikube ip)
-echo "🖥️ La IP de Minikube es: $MINIKUBE_IP"
-echo "$MINIKUBE_IP local.service" | sudo tee -a /etc/hosts
+# --- MOSTRAR URL FINAL ---
+function show_final_url() {
+    echo "✅ Abrí tu navegador y entrá a: http://$INGRESS_DOMAIN/"
+}
 
-# -------------------------
-# 🖥️ Acceder a la Página
-# -------------------------
-echo "✅ Abrí tu navegador y entrá a: http://local.service/"
+# --- MAIN ---
+function main() {
+    check_dependencies
+    clone_repos
+    start_minikube
+    apply_manifests
+    wait_for_pod
+    open_service
+    configure_ingress
+    apply_ingress
+    configure_hosts
+    show_final_url
+}
+
+main "$@"
